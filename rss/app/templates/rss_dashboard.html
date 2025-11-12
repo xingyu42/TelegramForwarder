@@ -649,13 +649,17 @@
                                         <button class="btn btn-sm btn-primary" onclick="editConfig('{{ config.id }}', '{{ config.rule_id }}')">
                                             <i class="bi bi-gear"></i> 编辑
                                         </button>
-                                        <a href="/rss/toggle/{{ config.rule_id }}" class="btn btn-sm {% if config.enable_rss %}btn-warning{% else %}btn-success{% endif %}">
-                                            {% if config.enable_rss %}
-                                            <i class="bi bi-pause-fill"></i> 禁用
-                                            {% else %}
-                                            <i class="bi bi-play-fill"></i> 启用
-                                            {% endif %}
-                                        </a>
+                                        <!-- 修改:使用POST表单防止意外触发+防重复点击 -->
+                                        <form method="POST" action="/rss/toggle/{{ config.rule_id }}" style="display:inline;">
+                                            <button type="submit" class="btn btn-sm {% if config.enable_rss %}btn-warning{% else %}btn-success{% endif %}"
+                                                    onclick="return preventDoubleClick(this)">
+                                                {% if config.enable_rss %}
+                                                <i class="bi bi-pause-fill"></i> 禁用
+                                                {% else %}
+                                                <i class="bi bi-play-fill"></i> 启用
+                                                {% endif %}
+                                            </button>
+                                        </form>
                                         <button class="btn btn-sm btn-danger" data-bs-toggle="modal" data-bs-target="#deleteModal" data-id="{{ config.id }}" data-rule-id="{{ config.rule_id }}">
                                             <i class="bi bi-trash"></i> 删除
                                         </button>
@@ -1003,7 +1007,11 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                    <a href="#" id="deleteConfirm" class="btn btn-danger">删除</a>
+                    <!-- 修改:使用POST表单提交删除请求+防重复点击 -->
+                    <form method="POST" id="deleteForm" style="display:inline;">
+                        <button type="submit" class="btn btn-danger"
+                                onclick="return preventDoubleClick(this)">删除</button>
+                    </form>
                 </div>
             </div>
         </div>
@@ -1049,6 +1057,13 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        // 防止按钮重复点击的通用函数
+        function preventDoubleClick(btn) {
+            if (btn.disabled) return false;
+            btn.disabled = true;
+            return true;
+        }
+
         // 配置数据 - 使用JSON直接传递数据
         let configs;
         try {
@@ -1644,7 +1659,8 @@
         document.getElementById('deleteModal').addEventListener('show.bs.modal', function (event) {
             const button = event.relatedTarget;
             const ruleId = button.getAttribute('data-rule-id');
-            document.getElementById('deleteConfirm').href = '/rss/delete/' + ruleId;
+            // 修改:设置表单的action而非链接的href
+            document.getElementById('deleteForm').action = '/rss/delete/' + ruleId;
         });
 
         function copyFullRssLink(ruleId) {

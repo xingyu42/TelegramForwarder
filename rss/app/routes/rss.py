@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
-from models.models import get_session, User, RSSConfig, ForwardRule, RSSPattern
+from models.models import get_session, session_scope, User, RSSConfig, ForwardRule, RSSPattern
 from models.db_operations import DBOperations
 from typing import Optional, List
 from sqlalchemy.orm import joinedload
@@ -198,76 +198,93 @@ async def rss_config_save(
     finally:
         db_session.close()
 
-@router.get("/toggle/{rule_id}")
+@router.post("/toggle/{rule_id}")  # 修改:GET改为POST,防止浏览器预加载/重放
 async def toggle_rss(rule_id: int, user = Depends(get_current_user)):
     if not user:
         return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    
-    db_session = get_session()
+
     try:
-        # 初始化数据库操作对象
-        db_ops_instance = await init_db_ops()
-        
-        # 获取配置
-        config = await db_ops_instance.get_rss_config(db_session, rule_id)
-        if not config:
-            return RedirectResponse(
-                url="/rss/dashboard?error=配置不存在", 
-                status_code=status.HTTP_302_FOUND
-            )
-        
-        # 切换启用/禁用状态
-        await db_ops_instance.update_rss_config(
-            db_session,
-            rule_id,
-            enable_rss=not config.enable_rss
-        )
-        
+        with session_scope() as db_session:
+            # 使用行锁防止并发toggle导致的竞态条件
+            # SELECT ... FOR UPDATE 确保同一时刻只有一个请求能修改此配置
+            config = db_session.query(RSSConfig).filter(
+                RSSConfig.rule_id == rule_id
+            ).with_for_update().first()
+
+            if not config:
+                logger.warning(f"用户 {user.username} 尝试toggle不存在的规则 {rule_id}")
+                raise HTTPException(status_code=404, detail="配置不存在")
+
+            # 记录toggle操作日志
+            old_status = config.enable_rss
+            new_status = not old_status
+            logger.info(f"用户 {user.username} toggle RSS规则 {rule_id}: {old_status} -> {new_status}")
+
+            # 切换启用/禁用状态
+            config.enable_rss = new_status
+            # session_scope自动commit
+
         return RedirectResponse(
-            url="/rss/dashboard?success=RSS状态已切换", 
+            url="/rss/dashboard?success=RSS状态已切换",
             status_code=status.HTTP_302_FOUND
         )
-    finally:
-        db_session.close()
+    except HTTPException:
+        return RedirectResponse(
+            url="/rss/dashboard?error=配置不存在",
+            status_code=status.HTTP_302_FOUND
+        )
+    except Exception as e:
+        logger.error(f"Toggle RSS规则 {rule_id} 失败: {str(e)}")
+        return RedirectResponse(
+            url="/rss/dashboard?error=操作失败,请重试",
+            status_code=status.HTTP_302_FOUND
+        )
 
-@router.get("/delete/{rule_id}")
+@router.post("/delete/{rule_id}")  # 修改:GET改为POST,防止意外触发
 async def delete_rss(rule_id: int, user = Depends(get_current_user)):
     if not user:
         return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    
-    db_session = get_session()
+
     try:
         # 初始化数据库操作对象
         db_ops_instance = await init_db_ops()
-        
-        # 删除配置
-        config_deleted = await db_ops_instance.delete_rss_config(db_session, rule_id)
-        
-        if config_deleted:
-            # 删除关联的媒体和数据文件
-            try:
-                logger.info(f"开始删除规则 {rule_id} 的媒体和数据文件")
-                # 构建删除API的URL
-                rss_url = f"http://{RSS_HOST}:{RSS_PORT}/api/rule/{rule_id}"
-                
-                # 调用删除API
-                async with aiohttp.ClientSession() as client_session:
-                    async with client_session.delete(rss_url) as response:
-                        if response.status == 200:
-                            logger.info(f"成功删除规则 {rule_id} 的媒体和数据文件")
-                        else:
-                            response_text = await response.text()
-                            logger.warning(f"删除规则 {rule_id} 的媒体和数据文件失败, 状态码: {response.status}, 响应: {response_text}")
-            except Exception as e:
-                logger.error(f"调用删除媒体文件API时出错: {str(e)}")
-                # 不影响主流程，继续执行
-        
+        logger.info(f"用户 {user.username} 请求删除RSS规则 {rule_id}")
+
+        # 1️⃣ 先删除媒体和数据文件(可回滚,因为数据库还未提交)
+        logger.info(f"开始删除规则 {rule_id} 的媒体和数据文件")
+        rss_url = f"http://{RSS_HOST}:{RSS_PORT}/api/rule/{rule_id}"
+
+        async with aiohttp.ClientSession() as client_session:
+            async with client_session.delete(rss_url) as response:
+                if response.status != 200:
+                    response_text = await response.text()
+                    raise Exception(f"删除媒体文件失败: HTTP {response.status}, {response_text}")
+                logger.info(f"成功删除规则 {rule_id} 的媒体和数据文件")
+
+        # 2️⃣ 文件删除成功后,再删除数据库记录(使用行锁防止并发删除)
+        with session_scope() as db_session:
+            # 使用行锁确保同一时刻只有一个请求能删除此配置
+            config = db_session.query(RSSConfig).filter(
+                RSSConfig.rule_id == rule_id
+            ).with_for_update().first()
+
+            if config:
+                config_deleted = await db_ops_instance.delete_rss_config(db_session, rule_id)
+                if config_deleted:
+                    logger.info(f"已从数据库删除RSS规则 {rule_id}")
+            else:
+                logger.info(f"RSS规则 {rule_id} 不存在,跳过数据库删除")
+
         return RedirectResponse(
-            url="/rss/dashboard?success=RSS配置已删除", 
+            url="/rss/dashboard?success=RSS配置已删除",
             status_code=status.HTTP_302_FOUND
         )
-    finally:
-        db_session.close()
+    except Exception as e:
+        logger.error(f"删除RSS规则 {rule_id} 失败: {str(e)}")
+        return RedirectResponse(
+            url="/rss/dashboard?error=删除失败,请重试",
+            status_code=status.HTTP_302_FOUND
+        )
 
 @router.get("/patterns/{config_id}")
 async def get_patterns(config_id: int, user = Depends(get_current_user)):
@@ -311,28 +328,26 @@ async def save_pattern(
 ):
     """保存模式"""
     logger.info(f"开始保存模式，参数：config_id={rss_config_id}, pattern={pattern}, type={pattern_type}, priority={priority}")
-    
+
     if not user:
         logger.warning("未登录的访问尝试")
         return JSONResponse({"success": False, "message": "未登录"}, status_code=status.HTTP_401_UNAUTHORIZED)
-    
-    db_session = get_session()
+
     try:
         # 初始化数据库操作对象
         db_ops_instance = await init_db_ops()
-        
-        # 检查RSS配置是否存在
-        config = await db_ops_instance.get_rss_config(db_session, rss_config_id)
-        if not config:
-            logger.error(f"RSS配置不存在：config_id={rss_config_id}")
-            return JSONResponse({"success": False, "message": "RSS配置不存在"})
-        
-        logger.debug(f"找到RSS配置：{config}")
-    
-      
-        logger.info("创建新模式")
-        # 创建新模式
-        try:
+
+        with session_scope() as db_session:
+            # 检查RSS配置是否存在
+            config = await db_ops_instance.get_rss_config(db_session, rss_config_id)
+            if not config:
+                logger.error(f"RSS配置不存在：config_id={rss_config_id}")
+                return JSONResponse({"success": False, "message": "RSS配置不存在"})
+
+            logger.debug(f"找到RSS配置：{config}")
+
+            logger.info("创建新模式")
+            # 创建新模式
             pattern_obj = await db_ops_instance.create_rss_pattern(
                 db_session,
                 config.id,
@@ -340,16 +355,13 @@ async def save_pattern(
                 pattern_type=pattern_type,
                 priority=priority
             )
-            logger.info(f"新模式创建成功：{pattern_obj}")
-            return JSONResponse({"success": True, "message": "模式已创建", "pattern_id": pattern_obj.id})
-        except Exception as e:
-            logger.error(f"创建模式失败：{str(e)}")
-            raise
+            # session_scope自动commit
+
+        logger.info(f"新模式创建成功：{pattern_obj}")
+        return JSONResponse({"success": True, "message": "模式已创建", "pattern_id": pattern_obj.id})
     except Exception as e:
         logger.error(f"保存模式时发生错误：{str(e)}", exc_info=True)
         return JSONResponse({"success": False, "message": f"保存模式失败: {str(e)}"})
-    finally:
-        db_session.close()
 
 @router.delete("/pattern/{pattern_id}")
 async def delete_pattern(pattern_id: int, user = Depends(get_current_user)):

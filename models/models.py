@@ -10,6 +10,10 @@ from dotenv import load_dotenv
 load_dotenv()
 Base = declarative_base()
 
+# 全局单例engine和session工厂
+_engine = None
+_SessionFactory = None
+
 class Chat(Base):
     __tablename__ = 'chats'
 
@@ -492,11 +496,64 @@ def migrate_db(engine):
             logging.error(f'更新唯一约束时出错: {str(e)}')
 
 
+def get_engine():
+    """获取或创建全局单例engine
+
+    使用单例模式避免每次调用都创建新的engine,提高性能并避免连接池问题
+    """
+    global _engine
+    if _engine is None:
+        # 创建数据库文件夹
+        os.makedirs('./db', exist_ok=True)
+        _engine = create_engine(
+            'sqlite:///./db/forward.db',
+            # SQLite是本地文件数据库,不需要pool_pre_ping(仅用于网络数据库)
+            connect_args={'check_same_thread': False}  # SQLite多线程支持
+        )
+        logging.info("创建全局单例数据库engine")
+    return _engine
+
+def get_session_factory():
+    """获取或创建全局session工厂"""
+    global _SessionFactory
+    if _SessionFactory is None:
+        _SessionFactory = sessionmaker(bind=get_engine())
+        logging.info("创建全局单例session工厂")
+    return _SessionFactory
+
+def get_session():
+    """创建新session(保持向后兼容)
+
+    注意:调用方负责关闭session
+    """
+    return get_session_factory()()
+
+# 添加上下文管理器便于事务控制
+from contextlib import contextmanager
+
+@contextmanager
+def session_scope():
+    """提供事务上下文管理器
+
+    使用示例:
+        with session_scope() as session:
+            # 执行数据库操作
+            session.query(...)
+            # 自动commit,出错自动rollback
+    """
+    session = get_session()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
 def init_db():
     """初始化数据库"""
-    # 创建数据库文件夹
-    os.makedirs('./db', exist_ok=True)
-    engine = create_engine('sqlite:///./db/forward.db')
+    engine = get_engine()  # 使用单例engine
 
     # 首先创建所有表
     Base.metadata.create_all(engine)
@@ -505,12 +562,6 @@ def init_db():
     migrate_db(engine)
 
     return engine
-
-def get_session():
-    """创建会话工厂"""
-    engine = create_engine('sqlite:///./db/forward.db')
-    Session = sessionmaker(bind=engine)
-    return Session()
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)

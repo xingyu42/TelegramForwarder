@@ -17,6 +17,46 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 
+"""
+数据库操作模块 - 事务管理规范
+======================================
+
+本模块中的所有异步方法默认不执行 commit 或 rollback 操作,
+由调用方负责事务管理和生命周期控制。
+
+推荐使用 session_scope() 上下文管理器
+-----------------------------------
+session_scope() 提供自动化的事务管理:
+- 正常执行时自动 commit
+- 异常发生时自动 rollback
+- 退出时自动 close session
+
+使用示例:
+    from models.models import session_scope
+
+    with session_scope() as session:
+        await db_ops.create_rss_config(session, rule_id=1, enable_rss=True)
+        await db_ops.create_rss_pattern(session, config_id=1, pattern='.*')
+        # 退出 with 块时自动 commit
+
+手动管理事务的场景:
+    # 仅在需要精确控制事务边界时使用
+    session = get_session()
+    try:
+        await db_ops.delete_rss_config(session, rule_id=1)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+注意事项:
+- 所有 RSS 相关方法(create/update/delete)均不自动 commit
+- 调用方必须确保 session 最终被 close
+- 建议优先使用 session_scope() 避免连接泄露
+"""
+
 
 class DBOperations:
     def __init__(self):
@@ -802,27 +842,36 @@ class DBOperations:
         return session.query(RSSConfig).filter(RSSConfig.rule_id == rule_id).first()
 
     async def create_rss_config(self, session, rule_id, **kwargs):
-        """创建RSS配置"""
+        """创建RSS配置
+
+        注意:此方法不会自动commit,调用方需要负责事务管理
+        """
         rss_config = RSSConfig(rule_id=rule_id, **kwargs)
         session.add(rss_config)
-        session.commit()
+        # session.commit()  # 移除:由调用方控制事务
         return rss_config
 
     async def update_rss_config(self, session, rule_id, **kwargs):
-        """更新RSS配置"""
+        """更新RSS配置
+
+        注意:此方法不会自动commit,调用方需要负责事务管理
+        """
         rss_config = await self.get_rss_config(session, rule_id)
         if rss_config:
             for key, value in kwargs.items():
                 setattr(rss_config, key, value)
-            session.commit()
+            # session.commit()  # 移除:由调用方控制事务
         return rss_config
 
     async def delete_rss_config(self, session, rule_id):
-        """删除RSS配置"""
+        """删除RSS配置
+
+        注意:此方法不会自动commit,调用方需要负责事务管理
+        """
         rss_config = await self.get_rss_config(session, rule_id)
         if rss_config:
             session.delete(rss_config)
-            session.commit()
+            # session.commit()  # 移除:由调用方控制事务
             return True
         return False
 
@@ -836,7 +885,10 @@ class DBOperations:
         return session.query(RSSPattern).filter(RSSPattern.id == pattern_id).first()
 
     async def create_rss_pattern(self, session, rss_config_id, pattern, pattern_type, priority=0):
-        """创建RSS模式"""
+        """创建RSS模式
+
+        注意:此方法不会自动commit,调用方需要负责事务管理
+        """
         logger.info(f"创建RSS模式：config_id={rss_config_id}, pattern={pattern}, type={pattern_type}, priority={priority}")
         try:
             pattern_obj = RSSPattern(
@@ -846,53 +898,62 @@ class DBOperations:
                 priority=priority
             )
             session.add(pattern_obj)
-            session.commit()
-            logger.info(f"RSS模式创建成功：{pattern_obj.id}")
+            # session.commit()  # 移除:由调用方控制事务
+            logger.info(f"RSS模式创建完成(待commit)：{pattern_obj}")
             return pattern_obj
         except Exception as e:
             logger.error(f"创建RSS模式失败：{str(e)}")
-            session.rollback()
+            # session.rollback()  # 移除:由调用方处理rollback
             raise
 
     async def update_rss_pattern(self, session, pattern_id, **kwargs):
-        """更新RSS模式"""
+        """更新RSS模式
+
+        注意:此方法不会自动commit,调用方需要负责事务管理
+        """
         logger.info(f"更新RSS模式：pattern_id={pattern_id}, kwargs={kwargs}")
         try:
             pattern = session.query(RSSPattern).filter(RSSPattern.id == pattern_id).first()
             if not pattern:
                 logger.error(f"RSS模式不存在：pattern_id={pattern_id}")
                 raise ValueError("RSS模式不存在")
-            
+
             for key, value in kwargs.items():
                 setattr(pattern, key, value)
-            
-            session.commit()
-            logger.info(f"RSS模式更新成功：{pattern.id}")
+
+            # session.commit()  # 移除:由调用方控制事务
+            logger.info(f"RSS模式更新完成(待commit)：{pattern.id}")
             return pattern
         except Exception as e:
             logger.error(f"更新RSS模式失败：{str(e)}")
-            session.rollback()
+            # session.rollback()  # 移除:由调用方处理rollback
             raise
 
     async def delete_rss_pattern(self, session, pattern_id):
-        """删除RSS模式"""
+        """删除RSS模式
+
+        注意:此方法不会自动commit,调用方需要负责事务管理
+        """
         rss_pattern = await self.get_rss_pattern(session, pattern_id)
         if rss_pattern:
             session.delete(rss_pattern)
-            session.commit()
+            # session.commit()  # 移除:由调用方控制事务
             return True
         return False
 
     async def reorder_rss_patterns(self, session, rss_config_id, pattern_ids):
-        """重新排序RSS模式"""
+        """重新排序RSS模式
+
+        注意:此方法不会自动commit,调用方需要负责事务管理
+        """
         patterns = await self.get_rss_patterns(session, rss_config_id)
         pattern_dict = {p.id: p for p in patterns}
-        
+
         for index, pattern_id in enumerate(pattern_ids):
             if pattern_id in pattern_dict:
                 pattern_dict[pattern_id].priority = index
-        
-        session.commit()
+
+        # session.commit()  # 移除:由调用方控制事务
 
     # 用户相关操作
     async def get_user(self, session, username):
