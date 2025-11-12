@@ -583,6 +583,47 @@ async def process_whitelist_then_blacklist_mode(rule, message_text, reverse_blac
     logger.info("所有条件都满足，允许转发")
     return True
 
+async def construct_message_link(client, chat_id: int, message_id: int) -> str:
+    """
+    构造 Telegram 消息链接,优先使用公有频道用户名
+
+    Args:
+        client: Telethon 客户端
+        chat_id: Telegram chat ID (可能包含100前缀的频道ID)
+        message_id: 消息ID
+
+    Returns:
+        str: 消息链接
+            - 公有频道: https://t.me/{username}/{message_id}
+            - 私有频道: https://t.me/c/{channel_id}/{message_id}
+    """
+    try:
+        # 尝试获取频道实体
+        channel = await client.get_entity(chat_id)
+
+        # 检查是否有公开用户名 (单个 username)
+        if hasattr(channel, 'username') and channel.username:
+            return f"https://t.me/{channel.username}/{message_id}"
+
+        # 检查是否有多个用户名 (usernames 列表)
+        if hasattr(channel, 'usernames') and channel.usernames:
+            for username_obj in channel.usernames:
+                if hasattr(username_obj, 'active') and username_obj.active:
+                    return f"https://t.me/{username_obj.username}/{message_id}"
+    except Exception as e:
+        logger.warning(f"无法获取频道 {chat_id} 实体信息,使用私有链接格式: {e}")
+
+    # 降级为私有频道链接格式
+    chat_id_str = str(chat_id)
+    if chat_id_str.startswith('100'):
+        channel_id = chat_id_str[3:]
+    elif chat_id_str.startswith('-100'):
+        channel_id = chat_id_str[4:]
+    else:
+        channel_id = chat_id_str.lstrip('-')
+
+    return f"https://t.me/c/{channel_id}/{message_id}"
+
 async def process_blacklist_then_whitelist_mode(rule, message_text, reverse_whitelist):
     """处理先黑后白模式
     

@@ -25,21 +25,22 @@ class FilterChain:
         self.filters.append(filter_obj)
         return self
         
-    async def process(self, client, event, chat_id, rule):
+    async def process(self, client, event, chat_id, rule, metadata=None):
         """
         处理消息
-        
+
         Args:
             client: 机器人客户端
             event: 消息事件
             chat_id: 聊天ID
             rule: 转发规则
-            
+            metadata: 可选的元数据字典
+
         Returns:
             bool: 表示处理是否成功
         """
         # 创建消息上下文
-        context = MessageContext(client, event, chat_id, rule)
+        context = MessageContext(client, event, chat_id, rule, metadata)
         
         logger.info(f"开始过滤器链处理，共 {len(self.filters)} 个过滤器")
         

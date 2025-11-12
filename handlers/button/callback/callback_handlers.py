@@ -7,6 +7,7 @@ from handlers.button.callback.ai_callback import *
 from handlers.button.callback.media_callback import *
 from handlers.button.callback.other_callback import *
 from handlers.button.callback.push_callback import *
+from handlers.button.callback.comment_callback import *
 import logging
 import aiohttp
 from utils.constants import RSS_HOST, RSS_PORT
@@ -698,4 +699,7 @@ CALLBACK_HANDLERS = {
     'toggle_media_send_mode': callback_toggle_media_send_mode,
     'delete_push_config': callback_delete_push_config,
     'push_page': callback_push_page,
+    # 评论区设置
+    'comment_settings': callback_comment_settings,
+    'set_comment_message_prefix': callback_set_comment_message_prefix,
 }

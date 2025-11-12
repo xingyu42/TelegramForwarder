@@ -55,6 +55,12 @@ async def handle_prompt_setting(event, client, sender_id, chat_id, current_state
         prompt_type = "原始链接"
         template_type = "link"
         logger.info(f"检测到设置原始链接模板,规则ID:{rule_id}")
+    elif current_state.startswith("waiting_comment_prefix:"):
+        rule_id = current_state.split(":")[1]
+        field_name = "comment_message_prefix"
+        prompt_type = "评论消息前缀"
+        template_type = "comment"
+        logger.info(f"检测到设置评论消息前缀,规则ID:{rule_id}")
     elif current_state.startswith("add_push_channel:"):
         # 处理添加推送频道
         rule_id = current_state.split(":")[1]
@@ -72,9 +78,17 @@ async def handle_prompt_setting(event, client, sender_id, chat_id, current_state
         if rule:
             old_prompt = getattr(rule, field_name) if hasattr(rule, field_name) else None
             new_prompt = event.message.text
+
+            # 特殊处理评论前缀: 如果用户输入为空白,设为 None(恢复默认)
+            if template_type == "comment":
+                stripped_input = new_prompt.strip()
+                if not stripped_input:
+                    new_prompt = None
+                    logger.info(f"用户输入为空,清除评论前缀,恢复默认")
+
             logger.info(f"找到规则,原提示词/模板:{old_prompt}")
             logger.info(f"准备更新为新提示词/模板:{new_prompt}")
-            
+
             setattr(rule, field_name, new_prompt)
             session.commit()
             logger.info(f"已更新规则{rule_id}的{prompt_type}提示词/模板")
@@ -142,6 +156,37 @@ async def handle_prompt_setting(event, client, sender_id, chat_id, current_state
                     chat_id,
                     f"已更新规则 {rule_id} 的{prompt_type}模板",
                     buttons=await bot_handler.create_other_settings_buttons(rule_id=rule_id)
+                )
+            elif template_type == "comment":
+                # 评论区设置页面
+                from handlers.button.callback.comment_callback import callback_comment_settings, COMMENT_SETTINGS_TEXT, create_comment_settings_buttons
+                from handlers.button.settings_manager import RULE_SETTINGS
+                from models.models import ChannelCommentMapping, Chat
+
+                # 获取评论区状态信息
+                comment_group_status = "未检测"
+                if rule.enable_comment_forward:
+                    source_chat = rule.source_chat
+                    mapping = session.query(ChannelCommentMapping).filter_by(
+                        channel_chat_id=source_chat.id
+                    ).first()
+                    if mapping and mapping.linked_chat_id:
+                        linked_chat = session.query(Chat).get(mapping.linked_chat_id)
+                        comment_group_status = f"✅ 已映射到: {linked_chat.name if linked_chat else '未知群组'}"
+                    else:
+                        comment_group_status = "⚠️ 未找到评论区映射"
+
+                settings_text = COMMENT_SETTINGS_TEXT.format(
+                    comment_forward_status=RULE_SETTINGS['enable_comment_forward']['values'][rule.enable_comment_forward],
+                    message_prefix=rule.comment_message_prefix or '💬 评论:',
+                    context_status=RULE_SETTINGS['enable_comment_context']['values'][rule.enable_comment_context],
+                    comment_group_status=comment_group_status
+                )
+
+                await client.send_message(
+                    chat_id,
+                    settings_text,
+                    buttons=await create_comment_settings_buttons(rule)
                 )
             
             # 删除用户消息

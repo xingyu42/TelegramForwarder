@@ -4,6 +4,7 @@ import pytz
 import re
 from datetime import datetime
 from filters.base_filter import BaseFilter
+from utils.common import construct_message_link
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,24 @@ class InfoFilter(BaseFilter):
 
         # logger.info(f"InfoFilter处理消息前，context: {context.__dict__}")
         try:
+            # 处理评论区消息的前缀和原消息链接
+            comment_prefix_text = ""  # 保存评论前缀,稍后与发送者信息组合
+            if context.comment_metadata.get('is_comment', False):
+                # 这是评论区消息
+                if rule.enable_comment_forward:
+                    # 保存评论区消息前缀(不直接赋值给sender_info,避免被后续覆盖)
+                    comment_prefix_text = (rule.comment_message_prefix or '💬 评论:') + "\n\n"
+                    logger.info(f'标记评论区前缀: {comment_prefix_text.strip()}')
+
+                    # 如果启用了评论上下文,添加原频道消息链接
+                    if rule.enable_comment_context:
+                        original_channel_id = context.comment_metadata.get('original_channel_chat_id')
+                        original_message_id = context.comment_metadata.get('original_message_id')
+
+                        if original_channel_id and original_message_id:
+                            original_link = await construct_message_link(context.client, original_channel_id, original_message_id)
+                            context.original_link = f"\n\n原频道消息: {original_link}"
+                            logger.info(f'添加原频道消息链接: {original_link}')
 
             # 添加原始链接
             if rule.is_original_link:
@@ -94,16 +113,23 @@ class InfoFilter(BaseFilter):
                         user_info = rule.userinfo_template
                         user_info = user_info.replace("{name}", sender_name)
                         user_info = user_info.replace("{id}", str(sender_id))
-                        
-                        context.sender_info = f"{user_info}\n\n"
+
+                        sender_info_text = f"{user_info}\n\n"
                     else:
                         # 使用默认格式
-                        context.sender_info = f"{sender_name}\n\n"
-                    
+                        sender_info_text = f"{sender_name}\n\n"
+
+                    # 组合评论前缀和发送者信息(如果有评论前缀,放在前面)
+                    context.sender_info = comment_prefix_text + sender_info_text
                     logger.info(f'添加发送者信息: {context.sender_info}')
                 except Exception as e:
                     logger.error(f'获取发送者信息出错: {str(e)}')
-            
+            else:
+                # 如果没有启用发送者信息,但有评论前缀,仍需设置
+                if comment_prefix_text:
+                    context.sender_info = comment_prefix_text
+                    logger.info(f'添加评论前缀(无发送者信息): {context.sender_info}')
+
             # 添加时间信息
             if rule.is_original_time:
                 try:

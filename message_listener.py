@@ -1,5 +1,5 @@
 from telethon import events
-from models.models import get_session, Chat, ForwardRule
+from models.models import get_session, Chat, ForwardRule, ChannelCommentMapping
 import logging
 from handlers import user_handler, bot_handler
 from handlers.prompt_handlers import handle_prompt_setting
@@ -10,6 +10,7 @@ from telethon.tl.types import ChannelParticipantsAdmins
 from managers.state_manager import state_manager
 from telethon.tl import types
 from filters.process import process_forward_rule
+from utils.comment_manager import CommentManager
 # 加载环境变量
 load_dotenv()
 
@@ -123,39 +124,88 @@ async def handle_user_message(event, user_client, bot_client):
         if not source_chat:
             return
             
-        # 添加日志：查询转发规则
         logger.info(f'找到源聊天: {source_chat.name} (ID: {source_chat.id})')
-        
-        # 查找以当前聊天为源的规则
-        rules = session.query(ForwardRule).filter(
-            ForwardRule.source_chat_id == source_chat.id
+
+        rules_to_process = []
+
+        # 1. 查找直接匹配的规则（当前聊天作为源）
+        direct_rules = session.query(ForwardRule).filter(
+            ForwardRule.source_chat_id == source_chat.id,
+            ForwardRule.enable_rule == True
         ).all()
-        
-        if not rules:
-            logger.info(f'聊天 {source_chat.name} 没有转发规则')
+
+        for rule in direct_rules:
+            rules_to_process.append({
+                'rule': rule,
+                'is_comment': False,
+                'parent_channel_id': None
+            })
+
+        if direct_rules:
+            logger.info(f'找到 {len(direct_rules)} 条直接转发规则')
+
+        # 2. 查找评论区匹配的规则
+        mapping = session.query(ChannelCommentMapping).filter(
+            ChannelCommentMapping.linked_chat_id == source_chat.id
+        ).first()
+
+        if mapping:
+            logger.info(f'通过评论区映射找到频道 Chat ID: {mapping.channel_chat_id}')
+            # 找到了映射，查询启用了评论区转发的规则
+            comment_rules = session.query(ForwardRule).filter(
+                ForwardRule.source_chat_id == mapping.channel_chat_id,
+                ForwardRule.enable_comment_forward == True,
+                ForwardRule.enable_rule == True
+            ).all()
+
+            for rule in comment_rules:
+                rules_to_process.append({
+                    'rule': rule,
+                    'is_comment': True,
+                    'parent_channel_id': mapping.channel_chat_id
+                })
+
+            if comment_rules:
+                logger.info(f'找到 {len(comment_rules)} 条评论区转发规则')
+
+        if not rules_to_process:
+            logger.info(f'聊天 {source_chat.name} 没有任何转发规则')
             return
-        
-        # 有转发规则时，才记录消息信息
+
+        # 记录消息信息
         if event.message.grouped_id:
             logger.info(f'[用户] 收到媒体组消息 来自聊天: {source_chat.name} ({chat_id}) 组ID: {event.message.grouped_id}')
         else:
             logger.info(f'[用户] 收到新消息 来自聊天: {source_chat.name} ({chat_id}) 内容: {event.message.text}')
-            
-        # 添加日志：处理规则
-        logger.info(f'找到 {len(rules)} 条转发规则')
-        
-        # 处理每条转发规则
-        for rule in rules:
+
+        # 3. 处理所有匹配的规则
+        for item in rules_to_process:
+            rule = item['rule']
             target_chat = rule.target_chat
-            if not rule.enable_rule:
-                logger.info(f'规则 {rule.id} 未启用')
-                continue
-            logger.info(f'处理转发规则 ID: {rule.id} (从 {source_chat.name} 转发到: {target_chat.name})')
-            if rule.use_bot:
-                # 直接使用过滤器模块中的process_forward_rule函数
-                await process_forward_rule(bot_client, event, str(chat_id), rule)
+
+            # 构造 metadata
+            metadata = None
+            if item['is_comment']:
+                # 获取父频道的 telegram_chat_id
+                parent_channel = session.query(Chat).get(item['parent_channel_id'])
+                parent_channel_telegram_id = int(parent_channel.telegram_chat_id) if parent_channel else None
+
+                metadata = {
+                    'comment_metadata': {
+                        'is_comment': True,
+                        'original_channel_chat_id': parent_channel_telegram_id,
+                        'original_message_id': None  # 这个在 InitFilter 中通过 reply_to 获取
+                    }
+                }
+                logger.info(f'处理评论区转发规则 ID: {rule.id} (从评论区 {source_chat.name} 转发到: {target_chat.name})')
             else:
-                await user_handler.process_forward_rule(user_client, event, str(chat_id), rule)
+                logger.info(f'处理转发规则 ID: {rule.id} (从 {source_chat.name} 转发到: {target_chat.name})')
+
+            # 调用处理函数
+            if rule.use_bot:
+                await process_forward_rule(bot_client, event, str(chat_id), rule, metadata)
+            else:
+                await user_handler.process_forward_rule(user_client, event, str(chat_id), rule, metadata)
         
     except Exception as e:
         logger.error(f'处理用户消息时发生错误: {str(e)}')

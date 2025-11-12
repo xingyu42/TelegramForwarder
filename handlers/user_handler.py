@@ -7,8 +7,11 @@ from utils.common import check_keywords, get_sender_info
 
 logger = logging.getLogger(__name__)
 
-async def process_forward_rule(client, event, chat_id, rule):
-    """处理转发规则（用户模式）"""
+async def process_forward_rule(client, event, chat_id, rule, metadata=None):
+    """处理转发规则（用户模式）
+
+    注意：用户模式的转发不使用过滤器链，metadata 参数仅用于接口一致性
+    """
 
     
     if not rule.enable_rule:

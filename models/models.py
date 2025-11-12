@@ -1,7 +1,8 @@
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Enum, UniqueConstraint, inspect, text
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Enum, UniqueConstraint, inspect, text, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from enums.enums import ForwardMode, PreviewMode, MessageMode, AddMode, HandleMode
+from datetime import datetime
 import logging
 import os
 from dotenv import load_dotenv
@@ -47,6 +48,9 @@ class ForwardRule(Base):
     is_filter_user_info = Column(Boolean, default=False)  # 是否过滤用户信息
     handle_mode = Column(Enum(HandleMode), nullable=False, default=HandleMode.FORWARD) # 处理模式,编辑模式和转发模式，默认转发
     enable_comment_button = Column(Boolean, default=False)  # 是否添加对应消息的评论区直达按钮
+    enable_comment_forward = Column(Boolean, default=False, comment='是否启用评论区转发')
+    comment_message_prefix = Column(String, nullable=True, default='💬 评论:', comment='评论区消息前缀标识')
+    enable_comment_context = Column(Boolean, default=False, comment='是否在评论消息中添加原频道消息链接')
     enable_media_type_filter = Column(Boolean, default=False)  # 是否启用媒体类型过滤
     enable_media_size_filter = Column(Boolean, default=False)  # 是否启用媒体大小过滤
     max_media_size = Column(Integer, default=os.getenv('DEFAULT_MAX_MEDIA_SIZE', 10))  # 媒体大小限制，单位MB
@@ -179,6 +183,19 @@ class PushConfig(Base):
     # 关系
     rule = relationship('ForwardRule', back_populates='push_config')
 
+class ChannelCommentMapping(Base):
+    """频道-评论区映射缓存表"""
+    __tablename__ = 'channel_comment_mappings'
+
+    id = Column(Integer, primary_key=True)
+    channel_chat_id = Column(Integer, ForeignKey('chats.id'), unique=True, nullable=False, comment='频道的 Chat ID')
+    linked_chat_id = Column(Integer, ForeignKey('chats.id'), nullable=True, comment='关联评论区的 Chat ID,NULL 表示无评论区')
+    last_checked = Column(DateTime, default=datetime.utcnow, comment='上次检查评论区的时间')
+
+    # 关系
+    channel = relationship('Chat', foreign_keys=[channel_chat_id])
+    linked_group = relationship('Chat', foreign_keys=[linked_chat_id])
+
 class RSSConfig(Base):
     __tablename__ = 'rss_configs'
 
@@ -238,6 +255,7 @@ def migrate_db(engine):
     
     # 获取当前数据库中所有表
     existing_tables = inspector.get_table_names()
+    channel_comment_table_exists = 'channel_comment_mappings' in existing_tables
     
     # 连接数据库
     connection = engine.connect()
@@ -315,6 +333,20 @@ def migrate_db(engine):
             if 'media_extensions' not in existing_tables:
                 logging.info("创建media_extensions表...")
                 MediaExtensions.__table__.create(engine)
+
+            if not channel_comment_table_exists:
+                logging.info("创建channel_comment_mappings表...")
+                ChannelCommentMapping.__table__.create(engine)
+                channel_comment_table_exists = True
+
+            if channel_comment_table_exists:
+                result = connection.execute(text("""
+                    SELECT name FROM sqlite_master 
+                    WHERE type='index' AND name='idx_linked_chat_id'
+                """))
+                if result.fetchone() is None:
+                    logging.info("创建channel_comment_mappings表索引 idx_linked_chat_id...")
+                    connection.execute(text("CREATE INDEX idx_linked_chat_id ON channel_comment_mappings(linked_chat_id)"))
                 
     except Exception as e:
         logging.error(f'迁移媒体类型数据时出错: {str(e)}')
@@ -348,6 +380,9 @@ def migrate_db(engine):
         'delay_seconds': 'ALTER TABLE forward_rules ADD COLUMN delay_seconds INTEGER DEFAULT 5',
         'handle_mode': 'ALTER TABLE forward_rules ADD COLUMN handle_mode VARCHAR DEFAULT "FORWARD"',
         'enable_comment_button': 'ALTER TABLE forward_rules ADD COLUMN enable_comment_button BOOLEAN DEFAULT FALSE',
+        'enable_comment_forward': 'ALTER TABLE forward_rules ADD COLUMN enable_comment_forward BOOLEAN DEFAULT FALSE',
+        'comment_message_prefix': 'ALTER TABLE forward_rules ADD COLUMN comment_message_prefix VARCHAR DEFAULT "💬 评论:"',
+        'enable_comment_context': 'ALTER TABLE forward_rules ADD COLUMN enable_comment_context BOOLEAN DEFAULT FALSE',
         'enable_media_type_filter': 'ALTER TABLE forward_rules ADD COLUMN enable_media_type_filter BOOLEAN DEFAULT FALSE',
         'enable_media_size_filter': 'ALTER TABLE forward_rules ADD COLUMN enable_media_size_filter BOOLEAN DEFAULT FALSE',
         'max_media_size': f'ALTER TABLE forward_rules ADD COLUMN max_media_size INTEGER DEFAULT {os.getenv("DEFAULT_MAX_MEDIA_SIZE", 10)}',

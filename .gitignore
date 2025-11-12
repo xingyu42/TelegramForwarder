@@ -9,6 +9,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+.codex/
+.claude/
+CLAUDE.md
+
 # 虚拟环境
 venv/
 env/

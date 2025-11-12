@@ -174,6 +174,24 @@ RULE_SETTINGS = {
         'toggle_action': 'toggle_enable_comment_button',
         'toggle_func': lambda current: not current
     },
+    'enable_comment_forward': {
+        'display_name': '评论区转发',
+        'values': {
+            True: '开启',
+            False: '关闭'
+        },
+        'toggle_action': 'toggle_enable_comment_forward',
+        'toggle_func': lambda current: not current
+    },
+    'enable_comment_context': {
+        'display_name': '附带原消息链接',
+        'values': {
+            True: '开启',
+            False: '关闭'
+        },
+        'toggle_action': 'toggle_enable_comment_context',
+        'toggle_func': lambda current: not current
+    },
     'only_rss': {
         'display_name': '只转发到RSS',
         'values': {
@@ -627,11 +645,19 @@ async def create_buttons(rule):
                 )
             ])
 
-    
+
             buttons.append([
                 Button.inline(
                     "🔔 推送设置",
                     f"push_settings:{rule.id}"
+                )
+            ])
+
+            # 评论区设置(仅机器人模式)
+            buttons.append([
+                Button.inline(
+                    "💭 评论区设置",
+                    f"comment_settings:{rule.id}"
                 )
             ])
 
