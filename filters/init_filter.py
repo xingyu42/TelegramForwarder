@@ -55,25 +55,17 @@ class InitFilter(BaseFilter):
                     logger.error(f'收集媒体组消息时出错: {str(e)}')
                     context.errors.append(f"收集媒体组消息错误: {str(e)}")
             # 检测评论区消息(通过 reply_to 判断)
-            if event.message.reply_to and hasattr(event.message.reply_to, 'reply_to_msg_id'):
+            # 仅当已标记为评论区消息时才进行详细检测（避免不必要的 API 调用）
+            if context.comment_metadata.get('is_comment') and event.message.reply_to and hasattr(event.message.reply_to, 'reply_to_msg_id'):
                 try:
                     replied_message = await event.message.get_reply_message()
-                    if replied_message:
-                        if hasattr(replied_message, 'fwd_from') and replied_message.fwd_from:
-                            fwd_from = replied_message.fwd_from
-                            if hasattr(fwd_from, 'from_id') and fwd_from.from_id:
-                                from_id = fwd_from.from_id
-                                if hasattr(from_id, 'channel_id'):
-                                    original_channel_id = from_id.channel_id
-                                    original_message_id = fwd_from.channel_post if hasattr(fwd_from, 'channel_post') else None
-                                    
-                                    if original_message_id:
-                                        if not hasattr(context, 'comment_metadata') or context.comment_metadata is None:
-                                            context.comment_metadata = {}
-                                        context.comment_metadata['is_comment'] = True
-                                        context.comment_metadata['original_channel_chat_id'] = int(original_channel_id)
-                                        context.comment_metadata['original_message_id'] = original_message_id
-                                        logger.info(f'检测到评论区消息: 原频道 {original_channel_id}, 原消息 {original_message_id}')
+                    if replied_message and hasattr(replied_message, 'fwd_from') and replied_message.fwd_from:
+                        fwd_from = replied_message.fwd_from
+                        if hasattr(fwd_from, 'from_id') and fwd_from.from_id and hasattr(fwd_from.from_id, 'channel_id'):
+                            original_message_id = getattr(fwd_from, 'channel_post', None)
+                            if original_message_id:
+                                context.comment_metadata['original_message_id'] = original_message_id
+                                logger.info(f'检测到评论区消息: 原消息 ID {original_message_id}')
                 except Exception as e:
                     logger.error(f'检测评论区消息时出错: {str(e)}')
            

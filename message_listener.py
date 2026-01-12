@@ -128,11 +128,23 @@ async def handle_user_message(event, user_client, bot_client):
 
         rules_to_process = []
 
-        # 1. 查找直接匹配的规则（当前聊天作为源）
-        direct_rules = session.query(ForwardRule).filter(
+        # 1. 查找直接匹配的规则（当前聊天作为源），预加载 target_chat 避免 N+1
+        from sqlalchemy.orm import joinedload
+        direct_rules = session.query(ForwardRule).options(
+            joinedload(ForwardRule.target_chat)
+        ).filter(
             ForwardRule.source_chat_id == source_chat.id,
             ForwardRule.enable_rule == True
         ).all()
+
+        # 检查是否有任何规则启用了评论区转发（每个源聊天只调用一次）
+        has_comment_forward = any(rule.enable_comment_forward for rule in direct_rules)
+        if has_comment_forward:
+            try:
+                comment_manager = CommentManager(user_client)
+                await comment_manager.get_linked_chat_id(source_chat.id)
+            except Exception as e:
+                logger.warning(f'建立评论区映射时出错(非致命): {str(e)}', exc_info=True)
 
         for rule in direct_rules:
             rules_to_process.append({
@@ -149,20 +161,29 @@ async def handle_user_message(event, user_client, bot_client):
             ChannelCommentMapping.linked_chat_id == source_chat.id
         ).first()
 
+        parent_channel_telegram_id = None  # 缓存父频道 ID，避免重复查询
         if mapping:
             logger.info(f'通过评论区映射找到频道 Chat ID: {mapping.channel_chat_id}')
-            # 找到了映射，查询启用了评论区转发的规则
-            comment_rules = session.query(ForwardRule).filter(
+            # 预加载 target_chat 避免 N+1
+            comment_rules = session.query(ForwardRule).options(
+                joinedload(ForwardRule.target_chat)
+            ).filter(
                 ForwardRule.source_chat_id == mapping.channel_chat_id,
                 ForwardRule.enable_comment_forward == True,
                 ForwardRule.enable_rule == True
             ).all()
 
+            # 预先获取父频道的 telegram_chat_id（只查询一次）
+            if comment_rules:
+                parent_channel = session.query(Chat).filter(Chat.id == mapping.channel_chat_id).first()
+                parent_channel_telegram_id = int(parent_channel.telegram_chat_id) if parent_channel else None
+
             for rule in comment_rules:
                 rules_to_process.append({
                     'rule': rule,
                     'is_comment': True,
-                    'parent_channel_id': mapping.channel_chat_id
+                    'parent_channel_id': mapping.channel_chat_id,
+                    'parent_channel_telegram_id': parent_channel_telegram_id
                 })
 
             if comment_rules:
@@ -186,14 +207,10 @@ async def handle_user_message(event, user_client, bot_client):
             # 构造 metadata
             metadata = None
             if item['is_comment']:
-                # 获取父频道的 telegram_chat_id
-                parent_channel = session.query(Chat).get(item['parent_channel_id'])
-                parent_channel_telegram_id = int(parent_channel.telegram_chat_id) if parent_channel else None
-
                 metadata = {
                     'comment_metadata': {
                         'is_comment': True,
-                        'original_channel_chat_id': parent_channel_telegram_id,
+                        'original_channel_chat_id': item['parent_channel_telegram_id'],
                         'original_message_id': None  # 这个在 InitFilter 中通过 reply_to 获取
                     }
                 }

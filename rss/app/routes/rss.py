@@ -205,11 +205,11 @@ async def toggle_rss(rule_id: int, user = Depends(get_current_user)):
 
     try:
         with session_scope() as db_session:
-            # 使用行锁防止并发toggle导致的竞态条件
-            # SELECT ... FOR UPDATE 确保同一时刻只有一个请求能修改此配置
+            # 注意: SQLite 不支持行级锁(FOR UPDATE)，并发安全依赖 SQLite 的文件锁
+            # 如需更强的并发保证，建议迁移到 PostgreSQL/MySQL
             config = db_session.query(RSSConfig).filter(
                 RSSConfig.rule_id == rule_id
-            ).with_for_update().first()
+            ).first()
 
             if not config:
                 logger.warning(f"用户 {user.username} 尝试toggle不存在的规则 {rule_id}")
@@ -250,30 +250,40 @@ async def delete_rss(rule_id: int, user = Depends(get_current_user)):
         db_ops_instance = await init_db_ops()
         logger.info(f"用户 {user.username} 请求删除RSS规则 {rule_id}")
 
-        # 1️⃣ 先删除媒体和数据文件(可回滚,因为数据库还未提交)
-        logger.info(f"开始删除规则 {rule_id} 的媒体和数据文件")
-        rss_url = f"http://{RSS_HOST}:{RSS_PORT}/api/rule/{rule_id}"
-
-        async with aiohttp.ClientSession() as client_session:
-            async with client_session.delete(rss_url) as response:
-                if response.status != 200:
-                    response_text = await response.text()
-                    raise Exception(f"删除媒体文件失败: HTTP {response.status}, {response_text}")
-                logger.info(f"成功删除规则 {rule_id} 的媒体和数据文件")
-
-        # 2️⃣ 文件删除成功后,再删除数据库记录(使用行锁防止并发删除)
+        # 1️⃣ 先删除数据库记录（保证数据一致性）
         with session_scope() as db_session:
-            # 使用行锁确保同一时刻只有一个请求能删除此配置
             config = db_session.query(RSSConfig).filter(
                 RSSConfig.rule_id == rule_id
-            ).with_for_update().first()
+            ).first()
 
             if config:
                 config_deleted = await db_ops_instance.delete_rss_config(db_session, rule_id)
                 if config_deleted:
                     logger.info(f"已从数据库删除RSS规则 {rule_id}")
             else:
-                logger.info(f"RSS规则 {rule_id} 不存在,跳过数据库删除")
+                logger.info(f"RSS规则 {rule_id} 不存在,跳过删除")
+                return RedirectResponse(
+                    url="/rss/dashboard?error=配置不存在",
+                    status_code=status.HTTP_302_FOUND
+                )
+
+        # 2️⃣ 数据库删除成功后,再删除媒体文件（失败不影响一致性,可重试）
+        try:
+            logger.info(f"开始删除规则 {rule_id} 的媒体和数据文件")
+            rss_url = f"http://{RSS_HOST}:{RSS_PORT}/api/rule/{rule_id}"
+
+            async with aiohttp.ClientSession() as client_session:
+                async with client_session.delete(rss_url) as response:
+                    if response.status == 200:
+                        logger.info(f"成功删除规则 {rule_id} 的媒体和数据文件")
+                    elif response.status == 404:
+                        logger.info(f"规则 {rule_id} 的媒体文件不存在,跳过")
+                    else:
+                        response_text = await response.text()
+                        logger.warning(f"删除媒体文件失败(非致命): HTTP {response.status}, {response_text}")
+        except Exception as file_err:
+            # 文件删除失败不影响主流程,仅记录日志
+            logger.warning(f"删除规则 {rule_id} 媒体文件时出错(非致命): {str(file_err)}")
 
         return RedirectResponse(
             url="/rss/dashboard?success=RSS配置已删除",

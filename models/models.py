@@ -256,14 +256,16 @@ class User(Base):
 def migrate_db(engine):
     """数据库迁移函数，确保新字段的添加"""
     inspector = inspect(engine)
-    
+
     # 获取当前数据库中所有表
     existing_tables = inspector.get_table_names()
     channel_comment_table_exists = 'channel_comment_mappings' in existing_tables
-    
-    # 连接数据库
-    connection = engine.connect()
-        
+
+    # 预先获取 forward_rules 表的列信息（用于后续迁移判断）
+    forward_rules_columns = set()
+    if 'forward_rules' in existing_tables:
+        forward_rules_columns = {column['name'] for column in inspector.get_columns('forward_rules')}
+
     try:
         with engine.connect() as connection:
 
@@ -353,13 +355,7 @@ def migrate_db(engine):
                     connection.execute(text("CREATE INDEX idx_linked_chat_id ON channel_comment_mappings(linked_chat_id)"))
                 
     except Exception as e:
-        logging.error(f'迁移媒体类型数据时出错: {str(e)}')
-    
-            
-
-
-    # 检查forward_rules表的现有列
-    forward_rules_columns = {column['name'] for column in inspector.get_columns('forward_rules')}
+        logging.error(f'数据库迁移时出错: {str(e)}')
 
     # 检查Keyword表的现有列
     keyword_columns = {column['name'] for column in inspector.get_columns('keywords')}

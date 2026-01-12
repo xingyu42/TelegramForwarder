@@ -23,6 +23,9 @@ SECRET_KEY = secrets.token_hex(32)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24小时
 
+# Cookie 安全配置
+COOKIE_SECURE = os.getenv('COOKIE_SECURE', 'false').lower() == 'true'  # 生产环境设为 true
+
 def init_db_ops():
     global db_ops
     if db_ops is None:
@@ -101,6 +104,8 @@ async def login(
             key="access_token",
             value=access_token,
             httponly=True,
+            samesite="lax",
+            secure=COOKIE_SECURE,
             max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
         )
         return response
@@ -154,6 +159,8 @@ async def register(request: Request):
             key="access_token",
             value=access_token,
             httponly=True,
+            samesite="lax",
+            secure=COOKIE_SECURE,
             max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
         )
         return response

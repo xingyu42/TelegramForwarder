@@ -37,3 +37,4 @@ handlers/bot_handler copy.py
 
 /logs
 logs/telegram_forwarder.log
+.ace-tool/
